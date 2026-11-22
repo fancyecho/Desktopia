@@ -1,0 +1,30 @@
+{
+  "comment": "Desktopia 自己加的主题：宿主提供 themes.json 时插到上游清单里（after 指定排在哪个主题后面）",
+  "themes": [
+    {
+      "after": "beach",
+      "id": "woodland",
+      "adaptive": true,
+      "name": "林间",
+      "desc": "俯视的森林，图标在林间空地上；风一阵阵吹过树梢，鸟从林子上空飞过",
+      "page": "woodland.html",
+      "status": "ready",
+      "product": "free",
+      "thumb": "url(thumbs/woodland.jpg) center / cover no-repeat, radial-gradient(ellipse 26% 22% at 30% 40%, #b8cc72 90%, transparent 94%), radial-gradient(circle at 70% 30%, #2f6a43 12%, transparent 13%), radial-gradient(circle at 80% 75%, #c3772b 9%, transparent 10%), linear-gradient(160deg, #2f6a43 0%, #3d7849 50%, #234f3a 100%)",
+      "thumbSource": "custom",
+      "groups": [
+        { "name": "图标周围", "params": [
+          { "key": "sigma", "label": "空地大小", "hint": "图标周围的空地有多大、树离图标多远", "min": 40, "max": 160, "step": 1, "default": 64, "unit": "px" }
+        ] },
+        { "name": "树", "params": [
+          { "key": "autumn", "label": "秋色", "hint": "阔叶树里有多少已经变黄、变红", "min": 0, "max": 1, "step": 0.01, "default": 0.15, "format": "percent" },
+          { "key": "wind", "label": "风", "hint": "树梢摇得多厉害，0 就是没有风", "min": 0, "max": 2, "step": 0.05, "default": 1, "format": "times" }
+        ] },
+        { "name": "天空", "params": [
+          { "key": "cover", "label": "云影", "hint": "从林子上飘过的云影有多少", "min": 0, "max": 1, "step": 0.01, "default": 0.3, "format": "percent" },
+          { "key": "birds", "label": "鸟", "hint": "同时在林子上空飞的鸟有几只", "min": 0, "max": 8, "step": 1, "default": 3, "unit": "只" }
+        ] }
+      ]
+    }
+  ]
+}

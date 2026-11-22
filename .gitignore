@@ -9,3 +9,10 @@
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Desktopia (macOS)
+.build/
+build/
+.swiftpm/
+.DS_Store
+.claude/

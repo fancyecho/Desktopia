@@ -1,221 +1,102 @@
-# Deskland Preview
+# Desktopia
 
-**Adaptive Windows wallpaper that makes your desktop icons part of the scenery.**
+**macOS 自适应动态壁纸：桌面图标会成为风景的一部分。** 图标挪动、增删时，海岸线、云朵、林间空地会跟着实时变化。
 
-Deskland turns the space around your icons into a living landscape. Move, add or remove an icon and the beach, meadow, clouds and shadows quietly reshape around it — in real time, without AI, an account or an API key.
+> **这是 fork 来的修改版。** Desktopia fork 自 [BLEZZ0102/Deskland](https://github.com/BLEZZ0102/Deskland)（Deskland Preview，GPL-3.0），把原来只能在 Windows 上运行的程序改成了 macOS 版，并新增了一个原创主题。它是**非官方**版本，与 Deskland 原作者没有关系，也没有得到原作者的认可或背书。Deskland 的名字和图标归原作者所有（见 [TRADEMARKS.md](TRADEMARKS.md)），所以这个修改版换了自己的名字。
 
-This is the **free, open-source Preview**, not a time-limited trial. It includes the complete **Beach** and **Meadow** themes, the Windows host, settings and sharing tools.
+*English: Desktopia is an unofficial macOS fork of [Deskland Preview](https://github.com/BLEZZ0102/Deskland) (GPL-3.0). It replaces the Windows host with a native macOS one and adds an original "Woodland" theme. Not affiliated with or endorsed by the Deskland authors.*
 
-**English** · [简体中文](#中文说明) · [Official website](https://deskland.app) · [Features](#features) · [Build from source](#build-from-source)
+![林间主题（Woodland）](docs/images/desktopia-woodland.jpg)
 
-![Meadow — included in Deskland Preview](docs/images/meadow.webp)
+## 和原项目相比改了什么
 
-![Beach — included in Deskland Preview](docs/images/beach.webp)
+- **新的 macOS 宿主**：原来的 Windows 宿主（C# + WebView2 + Win32）换成了 Swift + AppKit + WKWebView 写的 macOS 程序，代码在 `Sources/Desktopia/`。
+- **主题页面原样复用**：`prototype/` 里的沙滩、草地主题和设置页与上游 `v0.1.3`（commit `9818b57`）完全一样，没有改动。界面上写给 Windows 的文案（"开机自动启动"、Windows 设置步骤）和产品名，在程序提供文件时替换，见 `MacText.swift`、`Overlay.swift`。
+- **新增原创主题"林间"（Woodland）**：放在 `themes-mac/`。
+- 上游的 Windows 宿主（`host/`）和安装包工具（`tools/`）原样保留，没有修改。上游原来的 README 在 [README.upstream.md](README.upstream.md)。
 
-![Maldives — locked-theme preview](docs/images/maldives.webp)
+## 下载安装
 
-Meadow and Beach are included in Preview. Maldives is shown as a locked-theme preview.
+1. 从 [Releases](../../releases) 下载 `Desktopia-<版本>.zip`，解压后把 `Desktopia.app` 拖进"应用程序"文件夹。
+2. 这个 App 没有 Apple 开发者签名。第一次打开时，请在访达里**右键点 Desktopia → 打开**，再在弹窗里点"打开"；之后就能正常双击打开了。
+3. macOS 会请求**辅助功能**权限（系统设置 → 隐私与安全性 → 辅助功能 → 打开 Desktopia）。Desktopia 靠这个权限从访达读取桌面图标的位置；不授权也能运行，但场景不会避开图标。授权后从菜单栏图标退出，再重新打开。
 
-## Included themes
+需要 macOS 13 或更高版本。只覆盖主显示器。
 
-| Beach | Meadow |
+## 主题
+
+| 主题 | 来源 |
 | --- | --- |
-| ![Beach theme](prototype/thumbs/beach.webp) | ![Meadow theme](prototype/thumbs/meadow.webp) |
-| Turquoise waves, kayaks, seabirds and coconut palms. | Drifting clouds and shadows, a boy flying a kite and a little black cat. |
+| 沙滩、草地 | 上游 Deskland Preview 自带 |
+| 林间（Woodland） | Desktopia 原创：俯视的森林，图标在林间空地上；一阵阵风吹过树梢，鸟从上空飞过，云影飘过。可调空地大小、秋色、风、云影、鸟的数量 |
+| 其他 11 个（马尔代夫、森林、湖泊……） | 属于原作者付费的 Deskland 壁纸版（Windows），上游只公开了名字、简介和缩略图，没有页面代码。设置里仍显示为锁定，Desktopia 无法解锁 |
 
-The theme browser also shows 11 locked themes as a preview of the full Wallpaper edition. **Only names, descriptions and thumbnails are included for those themes — not their page code, parameters or implementation.**
+### 自己加主题
 
-## Features
+`themes-mac/` 和 `prototype/` 同级，程序读文件时先找 `themes-mac/`，再找 `prototype/`：
 
-- **Adaptive scenery:** uses the real positions of desktop icons and transitions smoothly when they move.
-- **Two complete themes:** every setting for Beach and Meadow is included and saved between sessions.
-- **Made for the desktop:** tray controls, startup on sign-in and automatic pause when a window is maximized or full-screen.
-- **Private sharing:** image and animation exports use sample icons and color blocks, never a screenshot of your desktop or real file names.
-- **Independent installation:** Preview uses its own install directory, settings, startup entry and instance identity, so it can coexist with other Deskland builds.
-- **English and Simplified Chinese:** no sign-in, purchase restoration, update service or store API is included.
+- `themes-mac/themes.json`：要加的主题条目，格式与上游相同，多一个 `after` 字段，表示在设置里排在哪个主题后面。
+- `themes-mac/i18n/<语言>.json`：英文名称和参数说明（中文直接写在 themes.json 里）。
+- 页面可以直接引用上游的 `share.js` 等文件。宿主协议和上游主题一样：页面加载后发 `ready`，然后会收到 `settings` / `icons` / `pause` / `reset` 消息。
 
-## Requirements
+浏览器预览（不用打包 App）：
 
-- Windows 10 or Windows 11, 64-bit.
-- Microsoft Edge WebView2 Runtime.
-- PowerShell and the .NET Framework C# compiler included with Windows; no .NET SDK installation is required.
-- An internet connection for the first build, which downloads the WebView2 development library.
-- Node.js only if you want to run the browser preview.
-
-Currently, Deskland renders on the **primary monitor** and targets 30 fps on integrated graphics.
-
-## Build from source
-
-Open PowerShell in the repository root:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File host\build.ps1
-host\bin\Deskland.exe
+```bash
+python3 scripts/serve.py
 ```
 
-Keep `host/` and `prototype/` together. Build output is written to `host/bin/`.
+然后打开 http://localhost:5179/woodland.html（可以拖示例图标）或 http://localhost:5179/settings.html。
 
-Run the program again or double-click its tray icon to open Settings. To exit and restore the original Windows wallpaper, use the tray menu or run:
+## 从源码构建
 
-```powershell
-host\bin\Deskland.exe --exit
+需要 Xcode 或 Command Line Tools（Swift 5.9 以上）。
+
+```bash
+./scripts/build-app.sh
 ```
 
-Preview settings and logs are stored separately in `%LOCALAPPDATA%\DesklandPreview`.
-
-## Browser preview
-
-```powershell
-node prototype\serve.mjs
+```bash
+open build/Desktopia.app
 ```
 
-Open **http://localhost:5178/settings.html**. The browser uses sample icons; adaptation to real desktop icons requires the Windows host.
+> 脚本用的是本机临时签名（ad-hoc），每次重新构建后签名都会变，macOS 可能要求重新授权辅助功能。
 
-## Windows installer
+开发时也可以直接运行：`swift run Desktopia`（会自动找到仓库里的 `prototype/`）。
 
-Build the NSIS installer without installing global development tools:
+### 命令行参数
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1
-```
-
-The first build downloads portable NSIS and Microsoft's WebView2 bootstrapper. Artifacts are written to `dist/` with SHA256 checksums and a matching source ZIP.
-
-The installer targets the current user's `Programs\Deskland Preview` directory and does not require administrator rights. If WebView2 is missing, its bootstrapper requires an internet connection. Uninstalling preserves user settings.
-
-[Download Deskland Preview for Windows](https://github.com/BLEZZ0102/Deskland/releases/latest). The installer is unsigned, so Windows SmartScreen may show a warning.
-
-## Project layout
-
-| Path | Contents |
+| 参数 | 作用 |
 | --- | --- |
-| `host/` | Windows host, build scripts and application manifest |
-| `prototype/flat.html` | Beach theme |
-| `prototype/meadow.html` | Meadow theme |
-| `prototype/settings.html` | Settings interface |
-| `prototype/themes.json` | Full free-theme definitions and locked-theme display metadata |
-| `prototype/share.js` | Privacy-preserving image and animation sharing |
-| `prototype/assets/` | Images used by the included themes |
-| `tools/` | Installer build tooling |
+| 无 | 启动壁纸并打开设置；已经在运行时打开设置 |
+| `--autostart` | 后台启动，不弹设置窗口 |
+| `--settings` | 让正在运行的实例打开设置 |
+| `--exit` | 让正在运行的实例退出，桌面恢复系统壁纸 |
+| `--debug-share image\|video` | 开发调试：不经过设置页直接生成分享图片 / 动画，结果写进日志 |
 
-## Known limitations
+数据目录：`~/Library/Application Support/Desktopia/`（`settings.json`、`host.log`）。分享的图片和动画存到 `~/Pictures/Desktopia/`。分享图只用图标的位置，图标和文件名都画成示例图形，不会截取真实桌面。
 
-- Only the primary monitor is supported.
-- Windows Spotlight or a wallpaper slideshow can briefly flash when Windows changes the background image.
-- Preview does not include account sign-in, entitlement restoration, automatic updates or the other themes' implementation.
+## 实现对照
 
-## Credits and license
+| 功能 | Windows 版（上游） | macOS 版（Desktopia） |
+| --- | --- | --- |
+| 挂到图标下面 | Progman / WorkerW 子窗口 | 无边框 `NSWindow`，层级为桌面层 +1（系统壁纸之上、访达图标层之下），所有桌面空间都显示，不接收鼠标 |
+| 显示主题页面 | WebView2 | WKWebView。页面加载前注入一段兼容代码，把 `window.chrome.webview` 接到 `webkit.messageHandlers`，页面不用改 |
+| 本地虚拟域名 | `https://app.local/` | `desktopia://app/`（`WKURLSchemeHandler`，支持 Range 请求，方便播放视频） |
+| 读图标位置 | 跨进程读 `SysListView32` | 用辅助功能 API 读访达：`AXScrollArea "desktop"` → `AXGroup` → 每个图标一个 `AXImage`；文字标签按访达的图标大小 / 字号设置推算。桌面小组件也会被避开 |
+| 最大化 / 全屏时暂停 | 检查前台窗口 | 窗口被完全挡住（`occlusionState`）、普通窗口铺满主屏可用区域、屏幕睡眠，或手动暂停 |
+| 托盘 | `NotifyIcon` | 菜单栏图标 `NSStatusItem` |
+| 开机自启 | 启动文件夹快捷方式 | 登录项 `SMAppService.mainApp` |
+| 额外主题 | — | `Overlay.swift` 把 `themes-mac/` 叠在 `prototype/` 上，合并 `themes.json` 和 i18n |
 
-Source code and included theme assets are released under [GPL-3.0](LICENSE). Third-party dependencies are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## 已知限制
 
-The Deskland name and icon are not licensed as trademarks; modified distributions should use their own name and icon. See [TRADEMARKS.md](TRADEMARKS.md).
+- 只覆盖主显示器（和原版一样）。
+- 桌面开着"叠放"时，一组叠放算一个图标。
+- 文字标签的范围是推算的：长文件名换行时可能和访达实际画的略有出入。
+- 没有全局快捷键（原版的 Ctrl+Alt+H），菜单入口是菜单栏图标。
 
-Issues and suggestions are welcome through GitHub Issues. This is an independent project, so immediate responses are not guaranteed.
+## 许可
 
----
+GPL-3.0，见 [LICENSE](LICENSE)。原项目版权归 Deskland 作者所有；macOS 宿主、林间主题和其他修改见 [NOTICE](NOTICE)。
 
-## 中文说明
-
-[English](#deskland-preview) · **简体中文**
-
-**让桌面图标成为风景的一部分。**
-
-Deskland 是一款 Windows 自适应动态壁纸。移动、添加或删除桌面图标时，海岸线、草地、云朵和阴影会实时围绕图标调整。全部在本地实时演算，不使用 AI，无需账号或 API Key。
-
-本仓库是**免费的开源体验版，不是限时试用版**，包含完整的沙滩和草地主题、Windows 宿主、设置界面与分享工具。
-
-[官方网站](https://deskland.app) · [从源码运行](#build-from-source) · [许可](#credits-and-license)
-
-### 包含的主题
-
-| 沙滩 | 草地 |
-| --- | --- |
-| ![沙滩主题](prototype/thumbs/beach.webp) | ![草地主题](prototype/thumbs/meadow.webp) |
-| 海浪、皮划艇、海鸟和椰子树。 | 漂浮的云与云影、放风筝的男孩和小黑猫。 |
-
-主题列表还展示另外 11 个锁定主题，帮助了解壁纸版内容。**这些锁定主题只有名称、简介和缩略图，不包含页面源码、参数或其他实现。**
-
-### 功能
-
-- **图标自适应：**读取真实桌面图标的位置，在移动、添加或删除时平滑调整场景。
-- **两个完整主题：**沙滩和草地的全部参数均可调整并自动保存。
-- **适合常驻桌面：**托盘控制、开机自动启动，前台窗口最大化或全屏时自动暂停。
-- **隐私分享：**图片和动画使用示例图标与名字色块，不截取桌面窗口或真实文件名。
-- **独立安装：**安装目录、用户数据、启动项和运行实例标识均独立，可与其他 Deskland 版本共存。
-- **简体中文和英文：**不包含登录、购买恢复、自动更新或商店接口。
-
-### 系统要求
-
-- Windows 10 / Windows 11，64 位。
-- Microsoft Edge WebView2 Runtime。
-- 使用 Windows 自带的 .NET Framework C# 编译器，无需安装 .NET SDK。
-- 第一次构建需要联网下载 WebView2 开发库。
-- 仅浏览器预览需要 Node.js。
-
-目前只覆盖**主显示器**，以核显 30fps 为目标。
-
-### 从源码运行
-
-在仓库根目录打开 PowerShell：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File host\build.ps1
-host\bin\Deskland.exe
-```
-
-请保持 `host/` 和 `prototype/` 的相对目录结构，编译结果位于 `host/bin/`。
-
-再次运行程序或双击托盘图标可打开设置。退出并恢复系统原壁纸，请使用托盘菜单或执行：
-
-```powershell
-host\bin\Deskland.exe --exit
-```
-
-体验版的设置与日志独立保存在 `%LOCALAPPDATA%\DesklandPreview`。
-
-### 浏览器预览
-
-```powershell
-node prototype\serve.mjs
-```
-
-打开 **http://localhost:5178/settings.html**。浏览器使用示例图标，真实桌面图标适配需要 Windows 宿主。
-
-### Windows 安装包
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\build-installer.ps1
-```
-
-首次构建会下载便携版 NSIS 和微软 WebView2 引导程序，无需安装全局开发工具。产物位于 `dist/`，附 SHA256 校验文件和对应源码 ZIP。
-
-安装包安装到当前用户的 `Programs\Deskland Preview` 目录，无需管理员权限。缺少 WebView2 时需要联网安装；卸载保留用户设置。
-
-[下载 Deskland Preview Windows 安装包](https://github.com/BLEZZ0102/Deskland/releases/latest)。安装包未签名，Windows SmartScreen 可能显示提示。
-
-### 目录结构
-
-| 路径 | 用途 |
-| --- | --- |
-| `host/` | Windows 宿主、构建脚本与清单 |
-| `prototype/flat.html` | 沙滩主题 |
-| `prototype/meadow.html` | 草地主题 |
-| `prototype/settings.html` | 设置界面 |
-| `prototype/themes.json` | 免费主题完整定义及锁定主题展示信息 |
-| `prototype/share.js` | 隐私保护的图片和动画分享 |
-| `prototype/assets/` | 随附主题图片素材 |
-| `tools/` | 安装包构建工具 |
-
-### 已知限制
-
-- 目前只支持主显示器。
-- 使用 Windows 聚焦或壁纸幻灯片时，系统换图可能造成短暂闪烁。
-- 体验版不包含账号登录、购买恢复、自动更新或其他主题实现。
-
-### 许可与反馈
-
-项目源码和随附主题素材按 [GPL-3.0](LICENSE) 发布，第三方依赖见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-Deskland 名称与图标不作为商标授权授予；修改版应使用自己的名称和图标，详见 [TRADEMARKS.md](TRADEMARKS.md)。
-
-欢迎通过 GitHub Issues 反馈问题和建议。个人项目，不保证即时回复。
+Deskland 的名字和图标不在 GPL 授权范围内（见 [TRADEMARKS.md](TRADEMARKS.md)）。本仓库只用这个名字注明来源。

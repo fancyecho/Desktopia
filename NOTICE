@@ -2,3 +2,16 @@ Copyright (C) 2026 Deskland authors.
 
 Project source code and included theme assets are licensed under GNU GPL version 3.
 Third-party dependencies retain their own licenses. See LICENSE, THIRD_PARTY_NOTICES.md and TRADEMARKS.md.
+
+Desktopia (this fork)
+---------------------
+Desktopia is an unofficial macOS version based on Deskland Preview v0.1.3
+(https://github.com/BLEZZ0102/Deskland, commit 9818b57). It is not affiliated with
+or endorsed by the Deskland authors.
+
+Modifications made in November 2026:
+- Added a native macOS host (Package.swift, Sources/Desktopia/, scripts/).
+- Added the original "Woodland" theme (themes-mac/).
+- prototype/, host/ and tools/ are unchanged from upstream.
+
+The modifications are also licensed under GNU GPL version 3.

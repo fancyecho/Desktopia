@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desktopia · 林间</title>
+<!--
+  林间：俯视的森林，图标在林间空地上（Desktopia 原创主题，GPL-3.0）
+  - 地面（WebGL 全屏着色器）：空地是黄绿的草和零星的小花，树下是深绿的林地；空地的边界来自图标场（与草地/沙滩主题同一套算法）
+  - 树（WebGL 实例化精灵，一次绘制）：位置固定，图标挪动时空地边上的树缩小消失 / 重新长出来；
+    阔叶树、针叶树、秋色树的精灵预先画进一张图集（水粉风：深色底、偏左上的亮面、零星笔触）
+  - 风：在顶点着色器里算，一阵阵风从左往右扫过树梢；树冠亮面比底色摆得多一点，有立体感
+  - 天上：几只鸟飞过（地上有影子），大片的云影慢慢飘过
+  宿主消息与草地主题相同：icons / settings / reset / pause；分享沿用 share.js
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #2c4a2e; }
+  body { font-family: -apple-system, "PingFang SC", "Segoe UI", system-ui, sans-serif; }
+  #art { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #ghosts { position: fixed; inset: 0; pointer-events: none; }
+  body.wall #ghosts { display: none; }
+  body.preview #ghosts { display: block; }
+  .ghost { position: absolute; pointer-events: auto; cursor: grab; }
+  body.preview .ghost { pointer-events: none; }
+  .ghost i { position: absolute; left: 50%; top: 4px; width: 48px; height: 48px; margin-left: -24px; border-radius: 9px;
+    background: rgba(255,255,255,.9); box-shadow: 3px 6px 8px rgba(20,40,20,.3); }
+  .ghost b { position: absolute; left: 14%; right: 14%; top: 60px; height: 10px; border-radius: 5px; background: rgba(255,255,255,.8); }
+  #hint { position: fixed; right: 14px; bottom: 14px; padding: 8px 12px; border-radius: 10px; font-size: 12px; line-height: 1.6;
+    color: #eef5ea; background: rgba(20,40,26,.66); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+  body.wall #hint { display: none; }
+  #nogl { position: fixed; inset: 0; display: none; place-items: center; color: #fff; font-size: 16px; }
+</style>
+</head>
+<body>
+<canvas id="art"></canvas>
+<div id="ghosts"></div>
+<div id="hint">林间 · 原型：拖动白色方块（示例图标），空地会跟着移动<br><span id="stats"></span></div>
+<div id="nogl">当前浏览器不支持 WebGL2。</div>
+
+<script>
+'use strict';
+
+/* ======================================================================
+   参数（默认值与 themes-mac/themes.json 一致）
+   ====================================================================== */
+const CELL_W = 76, CELL_H = 100, GRID_X0 = 4, GRID_Y0 = 6, TASKBAR = 0;   // share.js 用到
+const STEP = 5, MORPH_MS = 1800;
+const QS = new URLSearchParams(location.search);
+const WALL = QS.has('wallpaper');
+const PREVIEW = QS.has('preview');
+const P = { sigma: 64, warp: 40, autumn: 0.15, wind: 1, cover: 0.3, birds: 3, adaptive: 1, cap30: true };
+const DEFAULTS = Object.assign({}, P);
+const DISPLAY_KEYS = ['adaptive'];
+const SLIDERS = [
+  { key: 'sigma', act: 'field' }, { key: 'autumn' }, { key: 'wind' }, { key: 'cover' }, { key: 'birds' },
+];
+const WIND_DIR = [0.944, 0.33];                           // 风从左上往右下吹
+
+/* ======================================================================
+   噪声
+   ====================================================================== */
+let seed = (Math.random() * 1e6) | 0;
+function hash2(x, y, k = 0) {
+  let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(seed + k, 2246822519);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function vnoise(x, y, k = 0) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = hash2(ix, iy, k), b = hash2(ix + 1, iy, k), c = hash2(ix, iy + 1, k), d = hash2(ix + 1, iy + 1, k);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+}
+function fbm(x, y, k = 0) {
+  let a = 0.5, s = 0;
+  for (let i = 0; i < 4; i++) { s += a * vnoise(x, y, k + i * 7); x = x * 2.03 + 17.1; y = y * 2.03 + 17.1; a *= 0.5; }
+  return s;
+}
+function mulberry32(a) {
+  return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+const sstep = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
+// 可平铺的噪声纹理（着色器里画草地、林地的颜色变化）
+function makeNoiseImage() {
+  const S = 256, d = new Uint8Array(S * S * 4);
+  const tn = (x, y, p, k) => {
+    const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+    const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy), m = v => ((v % p) + p) % p;
+    const a = hash2(m(ix), m(iy), k), b = hash2(m(ix + 1), m(iy), k), c = hash2(m(ix), m(iy + 1), k), e = hash2(m(ix + 1), m(iy + 1), k);
+    return a + (b - a) * ux + (c - a) * uy + (a - b - c + e) * ux * uy;
+  };
+  const chans = [[8, 16, 32, 64], [8, 16, 32, 64], [8, 16, 32], [16, 32, 64, 128]];
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = (y * S + x) * 4;
+    for (let c = 0; c < 4; c++) {
+      let s = 0, w = 0.5, tw = 0;
+      chans[c].forEach((p, j) => { s += w * tn(x / S * p, y / S * p, p, 100 + c * 50 + j * 13); tw += w; w *= 0.5; });
+      d[i + c] = Math.min(Math.max((s / tw - 0.5) * 1.9 + 0.5, 0), 1) * 255;
+    }
+  }
+  return { S, d };
+}
+
+/* ======================================================================
+   空地场（CPU）：s = 到空地边的有符号距离（<0 在空地里）——和草地 / 沙滩主题同一套
+   ====================================================================== */
+let W = innerWidth, H = innerHeight, Gw = 1, Gh = 1, NZ = null;
+function buildNoise() {
+  NZ = { wx: new Float32Array(Gw * Gh), wy: new Float32Array(Gw * Gh) };
+  for (let gy = 0; gy < Gh; gy++) for (let gx = 0; gx < Gw; gx++) {
+    const i = gy * Gw + gx, x = gx * STEP, y = gy * STEP;
+    NZ.wx[i] = fbm(x * 0.0028, y * 0.0028, 1) - 0.47;
+    NZ.wy[i] = fbm(x * 0.0028, y * 0.0028, 2) - 0.47;
+  }
+}
+let fieldMs = 0;
+function computeField(rects) {
+  const t0 = performance.now();
+  const N = Gw * Gh, f1 = new Float32Array(N);
+  const sig = P.sigma, is1 = 1 / (sig * sig), wa = P.warp * 2.2, wmax = wa * 0.5;
+  for (const r of rects) {
+    const R = 5.5 * sig + Math.max(r.hw, r.hh) * 0.5 + wmax;
+    const gx0 = Math.max(0, Math.floor((r.cx - R) / STEP)), gx1 = Math.min(Gw - 1, Math.ceil((r.cx + R) / STEP));
+    const gy0 = Math.max(0, Math.floor((r.cy - R) / STEP)), gy1 = Math.min(Gh - 1, Math.ceil((r.cy + R) / STEP));
+    const chw = r.hw * 0.5, chh = r.hh * 0.5;
+    for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) {
+      const i = gy * Gw + gx;
+      const qx = gx * STEP + NZ.wx[i] * wa, qy = gy * STEP + NZ.wy[i] * wa;
+      let dx = Math.abs(qx - r.cx) - chw, dy = Math.abs(qy - r.cy) - chh;
+      if (dx < 0) dx = 0; if (dy < 0) dy = 0;
+      f1[i] += Math.exp(-(dx * dx + dy * dy) * is1);
+    }
+  }
+  const c0 = Math.sqrt(-Math.log(0.35)), s = new Float32Array(N), fMin = Math.exp(-30);
+  for (let i = 0; i < N; i++) {
+    const g = Math.log(Math.max(f1[i], fMin));
+    s[i] = sig * (Math.sqrt(Math.max(-g, 0)) - c0) - sig * 0.6 * Math.max(g, 0);
+  }
+  fieldMs = performance.now() - t0;
+  return { s };
+}
+function sampleArr(a, x, y) {
+  const fx = Math.min(Math.max(x / STEP, 0), Gw - 1.001), fy = Math.min(Math.max(y / STEP, 0), Gh - 1.001);
+  const ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy, i = iy * Gw + ix;
+  return (a[i] * (1 - tx) + a[i + 1] * tx) * (1 - ty) + (a[i + Gw] * (1 - tx) + a[i + Gw + 1] * tx) * ty;
+}
+
+/* ======================================================================
+   着色器
+   ====================================================================== */
+const VS_FULL = `#version 300 es
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// 地面：空地里是草和小花，树下是深绿的林地
+const FS_GROUND = `#version 300 es
+precision highp float;
+uniform sampler2D uNoise, uFA, uFB;
+uniform vec2 uRes, uGrid;
+uniform float uScale, uSeed, uStep, uMix;
+out vec4 o;
+const vec3 GRASS_A = vec3(0.60, 0.72, 0.36), GRASS_B = vec3(0.72, 0.80, 0.44), GRASS_DEEP = vec3(0.50, 0.64, 0.30);
+const vec3 INK = vec3(0.30, 0.45, 0.20);
+const vec3 FLOOR_A = vec3(0.15, 0.25, 0.15), FLOOR_B = vec3(0.23, 0.33, 0.18), MOSS = vec3(0.30, 0.42, 0.20);
+float hash2(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float ss(float a, float b, float x) { float t = clamp((x - a) / (b - a), 0.0, 1.0); return t * t * (3.0 - 2.0 * t); }
+vec4 N(vec2 p, float scale) { return texture(uNoise, p / scale + uSeed * 0.013); }
+float fieldS(sampler2D t, vec2 p) { return texture(t, (p / uStep + 0.5) / uGrid).r; }
+float segD(vec2 p, vec2 a, vec2 b) { vec2 pa = p - a, ba = b - a; return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)); }
+// 草：一笔笔斜着的短线，一簇簇地画
+float grassInk(vec2 p) {
+  const vec2 G = vec2(9.0, 7.0);
+  vec2 c0 = floor(p / G);
+  float ink = 0.0;
+  for (int j = -1; j <= 1; j++) {
+    vec2 c = c0 + vec2(0.0, float(j));
+    vec2 cp = (c + 0.5) * G;
+    float h = hash2(c + 3.1);
+    float dens = 0.7 * ss(0.38, 0.7, N(cp, 700.0).r) + 0.05;
+    if (h > dens) continue;
+    float ang = -1.1 + (N(cp, 1200.0).g - 0.5) * 0.8 + (hash2(c + 7.7) - 0.5) * 0.5;   // 接近竖直、略向右倒（风）
+    float len = 2.0 + 2.5 * hash2(c + 1.9);
+    vec2 ctr = cp + (vec2(hash2(c + 4.3), hash2(c + 5.9)) - 0.5) * vec2(3.0, 3.0);
+    vec2 dir = vec2(cos(ang), sin(ang)) * len;
+    ink = max(ink, (1.0 - ss(0.2, 0.9, segD(p, ctr - dir, ctr + dir))) * (0.3 + 0.4 * hash2(c + 9.1)));
+  }
+  return ink;
+}
+// 小花：每 18px 的格子里偶尔一朵（白 / 黄 / 淡紫），只开在空地里离树远的地方
+vec4 flower(vec2 p, float s) {
+  const float G = 18.0;
+  vec2 c = floor(p / G);
+  float h = hash2(c + 11.3);
+  float want = 0.10 * ss(-14.0, -40.0, s) * ss(0.35, 0.65, N((c + 0.5) * G, 500.0).b);
+  if (h > want) return vec4(0.0);
+  vec2 ctr = (c + 0.2 + 0.6 * vec2(hash2(c + 2.7), hash2(c + 8.1))) * G;
+  float r = 1.4 + 1.2 * hash2(c + 5.5);
+  float d = length(p - ctr) - r;
+  float k = hash2(c + 13.7);
+  vec3 col = k < 0.5 ? vec3(0.98, 0.97, 0.92) : k < 0.8 ? vec3(0.98, 0.86, 0.36) : vec3(0.82, 0.72, 0.92);
+  float sh = 1.0 - ss(-0.5, 1.0, length(p - ctr - vec2(0.8, 1.1)) - r);   // 一点点影子
+  return vec4(mix(col * 0.55, col, ss(0.5, -0.5, d)), max(ss(0.8, -0.4, d), sh * 0.35));
+}
+void main() {
+  vec2 p = vec2(gl_FragCoord.x, uRes.y * uScale - gl_FragCoord.y) / uScale;
+  float s = mix(fieldS(uFA, p), fieldS(uFB, p), uMix);
+  // 林地：深绿、带一点青苔的亮斑
+  float n1 = N(p, 900.0).b, n2 = N(p + 211.0, 260.0).g;
+  vec3 floorCol = mix(FLOOR_A, FLOOR_B, ss(0.3, 0.75, n1 * 0.6 + n2 * 0.4));
+  floorCol = mix(floorCol, MOSS, ss(0.6, 0.85, N(p + 733.0, 140.0).r) * 0.35);
+  // 空地：黄绿的草，大块的深浅，左上（向阳）稍亮
+  float w1 = N(p, 1500.0).b, w2 = N(p + 311.0, 520.0).g;
+  vec3 grass = mix(GRASS_A, GRASS_B, ss(0.3, 0.75, w1 * 0.7 + w2 * 0.3));
+  grass = mix(grass, GRASS_DEEP, ss(0.5, 0.85, N(p + 977.0, 1100.0).r) * 0.45);
+  grass *= 1.0 + 0.06 * (0.5 - (p.x + p.y) / (uRes.x + uRes.y));
+  if (s < 24.0) grass = mix(grass, INK, grassInk(p) * 0.55);
+  // 空地边：草往外慢慢变成林地（边上的树冠会盖住大半）
+  float edge = ss(-6.0, 16.0, s + (N(p, 180.0).r - 0.5) * 14.0);
+  vec3 col = mix(grass, floorCol, edge);
+  col = mix(col, col * 0.82, ss(-26.0, 0.0, s) * (1.0 - edge) * 0.5);          // 靠近树的草地被树荫压暗一点
+  if (s < -10.0) { vec4 f = flower(p, s); col = mix(col, f.rgb, f.a); }
+  col *= 1.0 + (hash2(floor(p * max(uScale, 1.0))) - 0.5) * 0.03;              // 纸的颗粒
+  o = vec4(col, 1.0);
+}`;
+
+// 树、鸟、云影：图集里的精灵，一次实例化绘制；风在这里算
+const VS_SPRITE = `#version 300 es
+layout(location = 0) in vec4 aRect;   // 中心 x, y，宽，高（CSS 像素）
+layout(location = 1) in vec4 aUV;     // 图集里的 u0 v0 u1 v1
+layout(location = 2) in vec4 aMisc;   // 风吹的幅度（px）、相位、不透明度、模式（0 原色 / 1 影子）
+layout(location = 3) in float aRot;   // 旋转（鸟）
+uniform vec2 uRes;
+uniform float uTime, uWind;
+out vec2 vUV;
+flat out float vAlpha, vMode;
+const vec2 DIR = vec2(0.944, 0.33);
+void main() {
+  vec2 q = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+  float ph = aMisc.y;
+  // 一阵阵的风沿着风向扫过去；每棵树再自己轻轻晃
+  float travel = dot(aRect.xy, DIR) * 0.0062 - uTime * (0.7 + 0.55 * uWind);
+  float gust = (0.5 + 0.5 * sin(travel)) * (0.65 + 0.35 * sin(aRect.y * 0.004 - aRect.x * 0.002 + uTime * 0.21));
+  float osc = sin(uTime * (1.4 + 0.9 * ph) + ph * 6.2831);
+  vec2 off = (DIR * (gust * 1.3 + osc * 0.4) + vec2(-DIR.y, DIR.x) * osc * 0.3) * aMisc.x * uWind;
+  vec2 c = cos(aRot) * vec2(1.0, 0.0) + sin(aRot) * vec2(0.0, 1.0);
+  vec2 l = (q - 0.5) * aRect.zw;
+  vec2 p = aRect.xy + off + vec2(l.x * c.x - l.y * c.y, l.x * c.y + l.y * c.x);
+  vUV = mix(aUV.xy, aUV.zw, q);
+  vAlpha = aMisc.z; vMode = aMisc.w;
+  gl_Position = vec4(p / uRes * 2.0 - 1.0, 0.0, 1.0);
+  gl_Position.y = -gl_Position.y;
+}`;
+const FS_SPRITE = `#version 300 es
+precision mediump float;
+uniform sampler2D uAtlas;
+in vec2 vUV;
+flat in float vAlpha, vMode;
+out vec4 o;
+const vec3 SHADOW = vec3(0.04, 0.10, 0.07);
+void main() {
+  vec4 c = texture(uAtlas, vUV);                 // 预乘过 alpha
+  o = vMode > 0.5 ? vec4(SHADOW, 1.0) * c.a * vAlpha : c * vAlpha;
+}`;
+
+/* ======================================================================
+   WebGL
+   ====================================================================== */
+const cv = document.getElementById('art');
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false });
+if (!gl) document.getElementById('nogl').style.display = 'grid';
+function program(vs, fs) {
+  const mk = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); throw new Error('shader'); }
+    return s;
+  };
+  const p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(p));
+  const U = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name; U[nm] = gl.getUniformLocation(p, nm); }
+  return { p, U };
+}
+const GROUND = program(VS_FULL, FS_GROUND);
+const SPRITE = program(VS_SPRITE, FS_SPRITE);
+const groundVAO = gl.createVertexArray();
+
+let noiseTex = null;
+function buildNoiseTex() {
+  const { S, d } = makeNoiseImage();
+  noiseTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, noiseTex);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, S, S, 0, gl.RGBA, gl.UNSIGNED_BYTE, d);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+}
+const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
+function toHalf(v) {
+  f32[0] = v; const x = u32[0];
+  const sign = (x >>> 16) & 0x8000, e = ((x >>> 23) & 0xff) - 112, m = x & 0x7fffff;
+  if (e <= 0) return sign;
+  if (e >= 31) return sign | 0x7c00;
+  return sign | (e << 10) | (m >>> 13);
+}
+const ftex = [null, null];
+let fromI = 0, toI = 0, morphT0 = -1e9, morphDur = MORPH_MS, FA = null, FB = null;
+function allocField() {
+  for (let i = 0; i < 2; i++) {
+    if (ftex[i]) gl.deleteTexture(ftex[i]);
+    ftex[i] = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, ftex[i]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, Gw, Gh, 0, gl.RED, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+}
+function uploadField(i, Fd) {
+  const d = new Uint16Array(Gw * Gh);
+  for (let k = 0; k < d.length; k++) d[k] = toHalf(Fd.s[k]);
+  gl.bindTexture(gl.TEXTURE_2D, ftex[i]);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, Gw, Gh, gl.RED, gl.HALF_FLOAT, d);
+}
+
+/* ======================================================================
+   精灵图集：树（阴影 / 树冠底 / 树冠亮面 三张）、鸟（4 帧）、云影
+   水粉风：深色打底，往左上（向光）偏一点叠中间色，再点亮面和零星笔触；不描边
+   ====================================================================== */
+const R0 = 40;                                            // 图集里树冠的半径（CSS 像素），实际大小按比例缩放
+const PAL = {
+  green: [['#1f4d34', '#2f6a43', '#4f8c53'], ['#29583a', '#3d7849', '#6a9d58'], ['#23503f', '#346c55', '#5a9172'],
+          ['#4c5d25', '#6a7e33', '#93a74b'], ['#5a7a2c', '#7c9a3c', '#a6c05a'], ['#2c5230', '#43703c', '#6f9a4e']],
+  autumn: [['#874719', '#c3772b', '#e9a94b'], ['#6d291c', '#a6432c', '#d16e47'], ['#87661a', '#c79e31', '#ebd27a'], ['#5a3a22', '#80562e', '#ab7d49']],
+  conifer: [['#163c32', '#235345', '#3b7462'], ['#1a392d', '#29513f', '#457358'], ['#1f3f3e', '#2e5b57', '#4c7f77']],
+};
+let atlas = null;                                          // { tex, scale, cell, cols, rows, variants: { green: [...], autumn: [...], conifer: [...] }, bird: [4], cloud: [3] }
+function buildAtlas(scale) {
+  const ks = Math.max(0.5, Math.min(scale, 2));
+  const C = Math.ceil(R0 * 2.5 * ks) + 6;                  // 一格：树冠 + 外圈（阴影的模糊、风吹的余量）
+  const nGreen = PAL.green.length * 4, nAut = PAL.autumn.length * 3, nCon = PAL.conifer.length * 4;
+  const cells = (nGreen + nAut + nCon) * 3 + 4 + 3;
+  const cols = 16, rows = Math.ceil(cells / cols);
+  const can = document.createElement('canvas');
+  can.width = cols * C; can.height = rows * C;
+  const ctx = can.getContext('2d');
+  let idx = 0;
+  const uvOf = i => { const cx = i % cols, cy = Math.floor(i / cols); return [(cx * C + 1) / can.width, (cy * C + 1) / can.height, ((cx + 1) * C - 1) / can.width, ((cy + 1) * C - 1) / can.height]; };
+  const cell = draw => {                                   // 在下一格的中心画（坐标单位：CSS 像素，原点在格子中心）
+    const i = idx++, cx = i % cols, cy = Math.floor(i / cols);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(cx * C, cy * C, C, C); ctx.clip();
+    ctx.translate(cx * C + C / 2, cy * C + C / 2); ctx.scale(ks, ks);
+    draw(ctx);
+    ctx.restore();
+    return uvOf(i);
+  };
+  const rnd = mulberry32(90210);
+  const variants = { green: [], autumn: [], conifer: [] };
+  const mkTree = (kind, pal) => {
+    const shape = kind === 'conifer' ? coniferShape(rnd) : leafyShape(rnd);
+    const shadow = cell(c => drawSilhouette(c, shape, ks));
+    const body = cell(c => drawTree(c, shape, pal, rnd, 'body'));
+    const top = cell(c => drawTree(c, shape, pal, rnd, 'top'));
+    return { shadow, body, top };
+  };
+  for (const pal of PAL.green) for (let k = 0; k < 4; k++) variants.green.push(mkTree('leafy', pal));
+  for (const pal of PAL.autumn) for (let k = 0; k < 3; k++) variants.autumn.push(mkTree('leafy', pal));
+  for (const pal of PAL.conifer) for (let k = 0; k < 4; k++) variants.conifer.push(mkTree('conifer', pal));
+  const bird = [1, 0.62, 0.28, 0.62].map(span => cell(c => drawBird(c, span)));
+  const cloud = [0, 1, 2].map(() => cell(c => drawCloudBlob(c, rnd, ks)));
+  if (atlas && atlas.tex) gl.deleteTexture(atlas.tex);
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, can);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  atlas = { tex, scale: ks, cellCss: C / ks, variants, bird, cloud };
+}
+// 阔叶树：一圈大小不一的圆鼓包 + 中间一个
+function leafyShape(rnd) {
+  const n = 6 + Math.floor(rnd() * 4), lobes = [], a0 = rnd() * 6.28;
+  for (let i = 0; i < n; i++) {
+    const a = a0 + i / n * 6.283 + (rnd() - 0.5) * 0.5, d = R0 * (0.36 + rnd() * 0.16), r = R0 * (0.4 + rnd() * 0.18);
+    lobes.push([Math.cos(a) * d, Math.sin(a) * d * 0.94, r]);
+  }
+  lobes.push([(rnd() - 0.5) * R0 * 0.15, (rnd() - 0.5) * R0 * 0.15, R0 * 0.55]);
+  return { kind: 'leafy', lobes };
+}
+// 针叶树（俯视）：三层星形，一层比一层小、一层比一层亮
+function coniferShape(rnd) {
+  const k = 9 + Math.floor(rnd() * 4), tiers = [];
+  for (let t = 0; t < 3; t++) tiers.push({ r: R0 * [0.92, 0.66, 0.4][t] * (0.95 + rnd() * 0.1), rot: rnd() * 6.28, k: k - t * 2 });
+  return { kind: 'conifer', tiers };
+}
+function inLobes(lobes, x, y, shrink = 0) { return lobes.some(([cx, cy, r]) => Math.hypot(x - cx, y - cy) < r - shrink); }
+function starPath(c, r, k, rot, dx = 0, dy = 0) {
+  c.beginPath();
+  for (let i = 0; i < k * 2; i++) {
+    const a = rot + i / (k * 2) * 6.283, rr = i % 2 ? r * 0.6 : r;
+    const x = dx + Math.cos(a) * rr, y = dy + Math.sin(a) * rr;
+    i ? c.lineTo(x, y) : c.moveTo(x, y);
+  }
+  c.closePath();
+}
+function shapePath(c, shape, grow = 0) {
+  c.beginPath();
+  if (shape.kind === 'leafy') for (const [x, y, r] of shape.lobes) { c.moveTo(x + r + grow, y); c.arc(x, y, r + grow, 0, 6.283); }
+  else { const t = shape.tiers[0]; starPath(c, t.r + grow, t.k, t.rot); }
+}
+function drawSilhouette(c, shape, ks) {
+  // 用 shadowBlur 画一块软边的影子：形状本身画在格子外面，只让影子落进来
+  c.shadowColor = '#000'; c.shadowBlur = R0 * 0.16 * ks; c.shadowOffsetX = 4000 * ks;
+  c.translate(-4000, 0);
+  c.fillStyle = '#000'; c.lineJoin = 'round'; c.lineWidth = R0 * 0.1;
+  shapePath(c, shape); c.fill(); if (shape.kind === 'conifer') c.stroke();
+}
+function drawTree(c, shape, [dark, mid, light], rnd, layer) {
+  const LX = -0.08 * R0, LY = -0.1 * R0;                  // 光从左上来
+  if (shape.kind === 'conifer') {
+    c.lineJoin = 'round';
+    const tiers = layer === 'body' ? [0, 1] : [2];
+    for (const t of tiers) {
+      const T = shape.tiers[t], col = [dark, mid, light][t];
+      c.fillStyle = col; c.strokeStyle = col; c.lineWidth = R0 * 0.09;
+      starPath(c, T.r, T.k, T.rot, LX * t * 0.6, LY * t * 0.6); c.fill(); c.stroke();
+      // 每根枝条上一道亮一点的线
+      c.strokeStyle = t === 2 ? 'rgba(255,255,230,0.25)' : 'rgba(255,255,230,0.12)'; c.lineWidth = R0 * 0.035;
+      c.beginPath();
+      for (let i = 0; i < T.k; i++) {
+        const a = T.rot + i / T.k * 6.283, x = Math.cos(a), y = Math.sin(a);
+        if (x * -0.6 + y * -0.8 < -0.2 && t < 2) continue;  // 背光的一侧不画
+        c.moveTo(LX * t * 0.6, LY * t * 0.6); c.lineTo(LX * t * 0.6 + x * T.r * 0.85, LY * t * 0.6 + y * T.r * 0.85);
+      }
+      c.stroke();
+    }
+    if (layer === 'top') { c.fillStyle = 'rgba(255,255,220,0.35)'; c.beginPath(); c.arc(LX * 1.4, LY * 1.4, R0 * 0.07, 0, 6.283); c.fill(); }
+    return;
+  }
+  const L = shape.lobes;
+  if (layer === 'body') {
+    c.fillStyle = dark;
+    for (const [x, y, r] of L) { c.beginPath(); c.arc(x, y, r, 0, 6.283); c.fill(); }
+    c.fillStyle = mid;
+    for (const [x, y, r] of L) { c.beginPath(); c.arc(x + LX * 0.9, y + LY * 0.9, r * 0.84, 0, 6.283); c.fill(); }
+    // 水粉笔触：一些深浅不一的小圆点，只点在树冠里
+    for (let i = 0; i < 46; i++) {
+      const x = (rnd() - 0.5) * R0 * 2, y = (rnd() - 0.5) * R0 * 2;
+      if (!inLobes(L, x, y, R0 * 0.08)) continue;
+      c.globalAlpha = 0.35 + rnd() * 0.3;
+      c.fillStyle = rnd() < 0.55 ? dark : mid;
+      c.beginPath(); c.ellipse(x, y, R0 * (0.05 + rnd() * 0.06), R0 * (0.04 + rnd() * 0.04), rnd() * 3, 0, 6.283); c.fill();
+    }
+    c.globalAlpha = 1;
+  } else {
+    // 亮面：朝光的鼓包上各一块浅色，再点几笔高光
+    c.fillStyle = light;
+    for (const [x, y, r] of L) {
+      const facing = (x * -0.6 + y * -0.8) / (Math.hypot(x, y) + 1e-3);
+      if (facing < -0.25 && r < R0 * 0.5) continue;
+      c.globalAlpha = 0.75;
+      c.beginPath(); c.arc(x + LX * 1.8, y + LY * 1.8, r * (0.42 + 0.12 * Math.max(facing, 0)), 0, 6.283); c.fill();
+    }
+    for (let i = 0; i < 26; i++) {
+      const x = (rnd() - 0.6) * R0 * 1.6, y = (rnd() - 0.65) * R0 * 1.6;
+      if (!inLobes(L, x, y, R0 * 0.18)) continue;
+      c.globalAlpha = 0.3 + rnd() * 0.4;
+      c.fillStyle = rnd() < 0.3 ? 'rgba(255,255,225,0.9)' : light;
+      c.beginPath(); c.ellipse(x, y, R0 * (0.035 + rnd() * 0.05), R0 * (0.03 + rnd() * 0.03), rnd() * 3, 0, 6.283); c.fill();
+    }
+    c.globalAlpha = 1;
+  }
+}
+// 鸟（俯视，头朝右）：span = 翅膀张开的程度
+function drawBird(c, span) {
+  const s = R0 / 40;
+  c.fillStyle = '#3a332d';
+  c.beginPath();                                           // 两只翅膀
+  for (const side of [-1, 1]) {
+    c.moveTo(3 * s, 0);
+    c.quadraticCurveTo(2 * s, side * 13 * span * s, -5 * s, side * 22 * span * s);
+    c.quadraticCurveTo(-3 * s, side * 10 * span * s, -6 * s, 0);
+  }
+  c.fill();
+  c.beginPath(); c.ellipse(0, 0, 10 * s, 3.3 * s, 0, 0, 6.283); c.fill();           // 身体
+  c.beginPath(); c.moveTo(-8 * s, 0); c.lineTo(-15 * s, -4 * s); c.lineTo(-15 * s, 4 * s); c.closePath(); c.fill();   // 尾巴
+  c.fillStyle = '#6b5f52'; c.beginPath(); c.ellipse(2 * s, -0.8 * s, 5 * s, 1.4 * s, 0, 0, 6.283); c.fill();       // 背上一点亮
+}
+// 云影：几个圆叠成一团，软边
+function drawCloudBlob(c, rnd, ks) {
+  c.shadowColor = '#000'; c.shadowBlur = R0 * 0.35 * ks; c.shadowOffsetX = 4000 * ks;
+  c.translate(-4000, 0); c.fillStyle = '#000';
+  c.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = rnd() * 6.28, d = R0 * 0.35 * rnd(), r = R0 * (0.32 + rnd() * 0.22);
+    c.moveTo(Math.cos(a) * d * 1.4 + r, Math.sin(a) * d * 0.8); c.arc(Math.cos(a) * d * 1.4, Math.sin(a) * d * 0.8, r, 0, 6.283);
+  }
+  c.fill();
+}
+
+/* ======================================================================
+   树：位置固定（随种子变），空地挪动时只是缩小消失 / 长出来
+   ====================================================================== */
+let trees = [];                                            // share.js 用 trees[i].grow === trees[i].want 判断画面稳定了没有
+function generateTrees() {
+  const rnd = mulberry32(seed ^ 0x5eed);
+  const G = 17, M = 60, list = [], hashG = new Map();
+  const key = (x, y) => Math.floor(x / 60) + ',' + Math.floor(y / 60);
+  const fits = (x, y, r) => {
+    const gx = Math.floor(x / 60), gy = Math.floor(y / 60);
+    for (let j = gy - 1; j <= gy + 1; j++) for (let i = gx - 1; i <= gx + 1; i++) {
+      const b = hashG.get(i + ',' + j); if (!b) continue;
+      for (const t of b) if (Math.hypot(t.x - x, t.y - y) < 0.52 * (t.r + r)) return false;
+    }
+    return true;
+  };
+  const cand = [];
+  for (let y = -M; y < H + M; y += G) for (let x = -M; x < W + M; x += G) cand.push([x + rnd() * G, y + rnd() * G, rnd()]);
+  cand.sort((a, b) => a[2] - b[2]);                        // 随机顺序放
+  for (const [x, y] of cand) {
+    const big = rnd();
+    const r = 16 + 24 * Math.pow(big, 0.7);
+    if (!fits(x, y, r)) continue;
+    const conP = 0.12 + 0.5 * sstep(0.45, 0.68, fbm(x * 0.0035, y * 0.0035, 31));   // 针叶树一片片地长
+    const t = { x, y, r, kind: rnd() < conP ? 'conifer' : 'leafy', v: rnd(), aut: rnd(), ph: rnd(), grow: 1, want: 1, wantA: 1 };
+    list.push(t);
+    const k = key(x, y); if (!hashG.has(k)) hashG.set(k, []); hashG.get(k).push(t);
+  }
+  // 小的先画，大的盖在上面；同样大小按从上往下
+  list.sort((a, b) => (a.r + a.y * 0.01) - (b.r + b.y * 0.01));
+  trees = list;
+  updateTreeWants();
+}
+// 树在不在：圆心离空地边多远（树冠可以伸进空地一点点）
+const treeVis = (t, s) => sstep(-0.5 * t.r, 0.05 * t.r + 4, s);
+// 静止时每棵树要么在、要么不在（不会停在半透明）；只有图标挪动的过渡里才淡入淡出
+function updateTreeWants() {
+  for (const t of trees) {
+    t.wantA = (FA ? treeVis(t, sampleArr(FA.s, t.x, t.y)) : 1) >= 0.5 ? 1 : 0;
+    t.want = (FB ? treeVis(t, sampleArr(FB.s, t.x, t.y)) : 1) >= 0.5 ? 1 : 0;
+  }
+}
+
+/* ======================================================================
+   鸟与云影
+   ====================================================================== */
+const birds = [], clouds = [];
+function spawnBird(b, initial) {
+  const rnd = Math.random;
+  const side = rnd() < 0.7 ? 0 : 1;                        // 多数顺着风从左边飞来
+  const ang = side === 0 ? (rnd() - 0.5) * 0.9 : Math.PI + (rnd() - 0.5) * 0.9;
+  const m = 60;
+  b.x = initial ? rnd() * W : side === 0 ? -m : W + m;
+  b.y = 60 + rnd() * (H - 120);
+  if (!initial) b.x -= Math.cos(ang) * rnd() * 40;
+  b.ang = ang; b.v = 55 + rnd() * 35; b.ph = rnd() * 10; b.turn = (rnd() - 0.5) * 0.12;
+  b.alt = 0.6 + rnd() * 0.6; b.size = 0.85 + rnd() * 0.35; b.wait = initial ? 0 : 1 + rnd() * 8;
+}
+function stepBirds(dt, t) {
+  const want = Math.round(P.birds);
+  while (birds.length < want) { const b = {}; spawnBird(b, true); birds.push(b); }
+  if (birds.length > want) birds.length = want;
+  for (const b of birds) {
+    if (b.wait > 0) { b.wait -= dt; continue; }
+    b.ang += b.turn * Math.sin(t * 0.25 + b.ph) * dt;
+    b.x += Math.cos(b.ang) * b.v * dt; b.y += Math.sin(b.ang) * b.v * dt;
+    if (b.x < -120 || b.x > W + 120 || b.y < -120 || b.y > H + 120) spawnBird(b, false);
+  }
+}
+function stepClouds(dt) {
+  const want = Math.round(P.cover * 8);
+  const speed = 6 + 10 * P.wind;
+  while (clouds.length < want) clouds.push(newCloud(clouds.length ? -400 : Math.random() * W));
+  for (let i = clouds.length - 1; i >= 0; i--) {
+    const c = clouds[i];
+    c.fade = i >= want ? c.fade - dt * 0.4 : Math.min(1, c.fade + dt * 0.4);
+    if (c.fade <= 0) { clouds.splice(i, 1); continue; }
+    c.x += WIND_DIR[0] * speed * c.v * dt; c.y += WIND_DIR[1] * speed * c.v * dt;
+    if (c.x - c.w > W + 50 || c.y - c.h > H + 50) Object.assign(c, newCloud(-c.w), { fade: 1 });
+  }
+}
+function newCloud(x) {
+  const w = 380 + Math.random() * 340;
+  return { x: x === -400 ? -w * 0.6 : x, y: -100 + Math.random() * (H + 100) - (x < 0 ? 120 : 0), w, h: w * (0.55 + Math.random() * 0.2),
+    v: 0.7 + Math.random() * 0.6, k: Math.floor(Math.random() * 3), fade: x < 0 ? 1 : 0 };
+}
+
+/* ======================================================================
+   实例数据：每个精灵 13 个数（中心 x y、宽高、uv 四个、风幅、相位、不透明度、模式、旋转）
+   ====================================================================== */
+const STRIDE = 13;
+let inst = new Float32Array(STRIDE * 4096), instCount = 0;
+const instBuf = gl.createBuffer(), spriteVAO = gl.createVertexArray();
+gl.bindVertexArray(spriteVAO);
+gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+[[0, 4, 0], [1, 4, 4], [2, 4, 8], [3, 1, 12]].forEach(([loc, n, off]) => {
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, n, gl.FLOAT, false, STRIDE * 4, off * 4);
+  gl.vertexAttribDivisor(loc, 1);
+});
+gl.bindVertexArray(null);
+function push(cx, cy, w, h, uv, amp, ph, alpha, mode, rot = 0) {
+  if ((instCount + 1) * STRIDE > inst.length) { const n = new Float32Array(inst.length * 2); n.set(inst); inst = n; }
+  const o = instCount++ * STRIDE;
+  inst[o] = cx; inst[o + 1] = cy; inst[o + 2] = w; inst[o + 3] = h;
+  inst[o + 4] = uv[0]; inst[o + 5] = uv[1]; inst[o + 6] = uv[2]; inst[o + 7] = uv[3];
+  inst[o + 8] = amp; inst[o + 9] = ph; inst[o + 10] = alpha; inst[o + 11] = mode; inst[o + 12] = rot;
+}
+function variantOf(t) {
+  const V = atlas.variants;
+  if (t.kind === 'conifer') return V.conifer[Math.floor(t.v * V.conifer.length)];
+  if (t.aut < P.autumn) return V.autumn[Math.floor(t.v * V.autumn.length)];
+  return V.green[Math.floor(t.v * V.green.length)];
+}
+function buildInstances(t) {
+  instCount = 0;
+  const cell = atlas.cellCss;
+  const vis = [];
+  for (const tr of trees) {
+    const s = curS(tr.x, tr.y);
+    const v = curMix >= 1 ? tr.want : tr.wantA + (tr.want - tr.wantA) * curMix;
+    tr.grow = v;
+    if (v < 0.02) continue;
+    const g = v * v * (3 - 2 * v);
+    // 靠空地边的树矮小一些；退开 / 长出来时边缩放边淡入淡出
+    const size = tr.r / R0 * (0.62 + 0.38 * sstep(0, 110, Math.max(s, 0))) * (0.6 + 0.4 * g);
+    vis.push([tr, size, g]);
+  }
+  // 影子先画（落在右下方），再按顺序画树冠底和亮面
+  for (const [tr, size, a] of vis) {
+    const V = variantOf(tr), q = cell * size;
+    push(tr.x + tr.r * 0.32, tr.y + tr.r * 0.42, q, q, V.shadow, 0.8 * size * 1.6, tr.ph, 0.5 * a, 1);
+  }
+  for (const [tr, size, a] of vis) {
+    const V = variantOf(tr), q = cell * size, amp = 2.2 * size * (tr.kind === 'conifer' ? 0.8 : 1.15);
+    push(tr.x, tr.y, q, q, V.body, amp, tr.ph, a, 0);
+    push(tr.x, tr.y, q, q, V.top, amp * 1.9, tr.ph, a, 0);
+  }
+  // 鸟：影子落在下面的树上 / 草地上，离得越高影子越远
+  for (const b of birds) {
+    if (b.wait > 0) continue;
+    const flap = Math.sin(t * 2 * Math.PI * 0.2 + b.ph) > -0.35;           // 一会儿扇翅膀、一会儿滑翔
+    const fr = flap ? Math.floor((t * 9 + b.ph * 7) % 4) : 0;
+    const q = cell * 0.62 * b.size;
+    push(b.x + 34 * b.alt, b.y + 46 * b.alt, q, q, atlas.bird[fr], 0, 0, 0.35, 1, b.ang);
+  }
+  for (const b of birds) {
+    if (b.wait > 0) continue;
+    const flap = Math.sin(t * 2 * Math.PI * 0.2 + b.ph) > -0.35;
+    const fr = flap ? Math.floor((t * 9 + b.ph * 7) % 4) : 0;
+    const q = cell * 0.62 * b.size;
+    push(b.x, b.y, q, q, atlas.bird[fr], 0, 0, 1, 0, b.ang);
+  }
+  // 云影：盖在最上面，淡淡一大片
+  for (const c of clouds) push(c.x, c.y, c.w * 2.2, c.h * 2.2, atlas.cloud[c.k], 0, 0, 0.28 * c.fade, 1);
+}
+
+/* ======================================================================
+   空地场的过渡
+   ====================================================================== */
+let icons = [];
+let curMix = 1;
+const curS = (x, y) => FB ? sampleArr(FA.s, x, y) * (1 - curMix) + sampleArr(FB.s, x, y) * curMix : 999;
+const iconRects = () => icons.map(ic => ({ cx: ic.x + ic.w / 2, cy: ic.y + ic.h / 2, hw: ic.w / 2 - 4, hh: ic.h / 2 - 2 }));
+function commit(fromEmpty = false) {
+  const nf = computeField(P.adaptive ? iconRects() : []);
+  const target = 1 - toI;
+  if (fromEmpty) { FA = computeField([]); uploadField(toI, FA); }
+  else FA = FB;
+  FB = nf;
+  uploadField(target, FB);
+  fromI = toI; toI = target;
+  morphT0 = performance.now();
+  morphDur = fromEmpty ? 2600 : MORPH_MS;
+  curMix = 0;
+  updateTreeWants();
+}
+function refresh() {
+  FA = FB = computeField(P.adaptive ? iconRects() : []);
+  uploadField(toI, FB);
+  fromI = toI; morphT0 = -1e9; curMix = 1;
+  updateTreeWants();
+}
+
+/* ======================================================================
+   尺寸 / 主循环
+   ====================================================================== */
+function resize() {
+  W = innerWidth; H = innerHeight;
+  const scale = PREVIEW ? 0.45 : Math.min(devicePixelRatio || 1, 2);
+  const box = cv.getBoundingClientRect();
+  cv.width = Math.round((box.width || W) * scale); cv.height = Math.round((box.height || H) * scale); cv._scale = scale;
+  Gw = Math.ceil(W / STEP) + 2; Gh = Math.ceil(H / STEP) + 2;
+  buildNoise();
+  allocField();
+  const atlasScale = PREVIEW ? 0.6 : scale;
+  if (!atlas || atlas.scale !== Math.max(0.5, Math.min(atlasScale, 2))) buildAtlas(atlasScale);
+  generateTrees();
+}
+
+const T0 = performance.now();
+let lastT = 0, fpsEMA = 0, frameN = 0, frameMs = 0;
+let paused = false;
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (paused) { lastT = 0; return; }
+  if (P.cap30 && now - lastT < 31) return;
+  const dt = lastT ? Math.min((now - lastT) / 1000, 0.1) : 0.03;
+  if (lastT) fpsEMA = fpsEMA ? fpsEMA * 0.9 + (1 / dt) * 0.1 : 1 / dt;
+  lastT = now;
+  const e = Math.min((now - morphT0) / morphDur, 1);
+  curMix = e < 0.5 ? 2 * e * e : 1 - Math.pow(-2 * e + 2, 2) / 2;
+  const t = (now - T0) / 1000;
+  stepBirds(dt, t);
+  stepClouds(dt);
+  draw(now);
+  if (++frameN % 15 === 0) updateStats();
+}
+function draw(now) {
+  const t0 = performance.now(), t = (now - T0) / 1000;
+  const Wc = cv.width / cv._scale, Hc = cv.height / cv._scale;
+  gl.viewport(0, 0, cv.width, cv.height);
+  gl.disable(gl.BLEND);
+  // 地面
+  gl.useProgram(GROUND.p);
+  gl.bindVertexArray(groundVAO);
+  let U = GROUND.U;
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, noiseTex);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ftex[fromI]);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, ftex[toI]);
+  gl.uniform1i(U.uNoise, 0); gl.uniform1i(U.uFA, 1); gl.uniform1i(U.uFB, 2);
+  gl.uniform2f(U.uRes, Wc, Hc); gl.uniform2f(U.uGrid, Gw, Gh);
+  gl.uniform1f(U.uScale, cv._scale); gl.uniform1f(U.uSeed, (seed % 997) * 0.37);
+  gl.uniform1f(U.uStep, STEP); gl.uniform1f(U.uMix, curMix);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // 树、鸟、云影
+  buildInstances(t);
+  gl.useProgram(SPRITE.p);
+  gl.bindVertexArray(spriteVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, inst.subarray(0, instCount * STRIDE), gl.DYNAMIC_DRAW);
+  U = SPRITE.U;
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, atlas.tex); gl.uniform1i(U.uAtlas, 3);
+  gl.uniform2f(U.uRes, Wc, Hc); gl.uniform1f(U.uTime, t); gl.uniform1f(U.uWind, P.wind);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, instCount);
+  gl.bindVertexArray(null);
+  frameMs = performance.now() - t0;
+}
+const statsEl = document.getElementById('stats');
+function updateStats() {
+  if (WALL) return;
+  statsEl.textContent = `${fpsEMA.toFixed(0)} fps · 单帧 ${frameMs.toFixed(1)} ms · 树 ${trees.length} · 精灵 ${instCount}`;
+}
+
+/* ======================================================================
+   网页单独打开时：示例图标，可以拖
+   ====================================================================== */
+const ghostsEl = document.getElementById('ghosts');
+function drawGhosts() {
+  ghostsEl.innerHTML = '';
+  icons.forEach((ic, i) => {
+    const el = document.createElement('div');
+    el.className = 'ghost';
+    el.style.cssText = `left:${ic.x}px;top:${ic.y}px;width:${ic.w}px;height:${ic.h}px`;
+    el.innerHTML = '<i></i><b></b>';
+    if (!WALL && !PREVIEW) bindDrag(el, ic);
+    ghostsEl.appendChild(el);
+  });
+}
+function bindDrag(el, ic) {
+  let d = null;
+  el.addEventListener('pointerdown', e => { el.setPointerCapture(e.pointerId); d = { sx: e.clientX, sy: e.clientY, ox: ic.x, oy: ic.y }; });
+  el.addEventListener('pointermove', e => { if (!d) return; el.style.left = d.ox + e.clientX - d.sx + 'px'; el.style.top = d.oy + e.clientY - d.sy + 'px'; });
+  el.addEventListener('pointerup', e => {
+    if (!d) return;
+    ic.x = Math.round((d.ox + e.clientX - d.sx - GRID_X0) / CELL_W) * CELL_W + GRID_X0;
+    ic.y = Math.round((d.oy + e.clientY - d.sy - GRID_Y0) / CELL_H) * CELL_H + GRID_Y0;
+    el.style.left = ic.x + 'px'; el.style.top = ic.y + 'px'; d = null;
+    commit();
+  });
+}
+function mockIcons() {
+  const out = [], cell = (c, r) => out.push({ x: GRID_X0 + c * CELL_W, y: GRID_Y0 + r * CELL_H, w: 76, h: 92 });
+  const rows = Math.max(1, Math.floor((H - GRID_Y0) / CELL_H));
+  for (let c = 0; c < 2; c++) for (let r = 0; r < Math.min(rows, 7); r++) cell(c, r);
+  const cols = Math.floor((W - GRID_X0) / CELL_W);
+  for (const [c, r] of [[5, 1], [5, 2], [6, 2], [cols - 1, 0], [cols - 1, 1], [cols - 1, 2], [cols - 2, 0], [Math.floor(cols * 0.55), Math.floor(rows * 0.55)]]) cell(c, r);
+  return out;
+}
+
+/* ======================================================================
+   托管模式（壁纸 / 设置窗口的预览），消息和草地主题一样
+   ====================================================================== */
+let iconsSeen = !(WALL || PREVIEW);
+function reseed(v) {
+  seed = v; buildNoise(); generateTrees();
+  if (!iconsSeen) return;
+  commit(true);
+}
+function applySettings(v) {
+  if (typeof v.seed === 'number' && v.seed !== seed) reseed(v.seed);
+  let field = false, adaptiveChanged = false;
+  for (const k in v) {
+    if ((!SLIDERS.some(s => s.key === k) && !DISPLAY_KEYS.includes(k)) || typeof v[k] !== typeof P[k] || P[k] === v[k]) continue;
+    if (DISPLAY_KEYS.includes(k) && v[k] !== 0 && v[k] !== 1) continue;
+    P[k] = k === 'birds' ? Math.max(0, Math.min(8, Math.round(v[k]))) : v[k];
+    if (k === 'adaptive') adaptiveChanged = true;
+    if (k === 'sigma') field = true;
+  }
+  if (adaptiveChanged && FB) commit();
+  else if (field && FB) refresh();
+}
+function startHostedMode() {
+  document.body.classList.add('wall');
+  if (PREVIEW) document.body.classList.add('preview');
+  icons = [];
+  commit(true);
+  let first = true;
+  const handle = m => {
+    if (m.t === 'pause') { paused = PREVIEW ? false : m.v; if (paused) draw(performance.now()); return; }
+    if (m.t === 'settings') { applySettings(m.v || {}); return; }
+    if (m.t === 'reset') { applySettings(Object.assign({}, DEFAULTS, m.v || {})); return; }
+    if (m.t !== 'icons') return;
+    const k = window.devicePixelRatio || 1;
+    icons = m.vis ? m.r.map(([l, t, r, b]) => ({ x: l / k, y: t / k, w: (r - l) / k, h: (b - t) / k })) : [];
+    if (PREVIEW) drawGhosts();
+    iconsSeen = true;
+    commit(first);                                // 第一次：一片完整的森林，图标周围的树慢慢退开
+    first = false;
+    if (paused) { curMix = 1; morphT0 = -1e9; for (const tr of trees) tr.grow = tr.want; draw(performance.now()); }
+  };
+  if (PREVIEW) {
+    addEventListener('message', ev => { if (ev.source === parent) handle(typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data); });
+    parent.postMessage(JSON.stringify({ t: 'ready' }), '*');
+    return;
+  }
+  const host = window.chrome && window.chrome.webview;
+  if (!host) return;
+  host.addEventListener('message', ev => handle(JSON.parse(ev.data)));
+  host.postMessage('ready');
+}
+
+let resizeT = 0;
+addEventListener('resize', () => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => { resize(); refresh(); if (!WALL && !PREVIEW) drawGhosts(); }, 100);
+});
+
+window.__dbg = { P, get trees() { return trees; }, commit, refresh, reseed,
+  bench() { const ts = []; for (let i = 0; i < 10; i++) { const a = performance.now(); draw(performance.now()); gl.finish(); ts.push(performance.now() - a); } ts.sort((a, b) => a - b); return { frame: +ts[5].toFixed(2), canvas: cv.width + 'x' + cv.height, trees: trees.length, sprites: instCount }; } };
+
+resize();
+buildNoiseTex();
+if (WALL || PREVIEW) startHostedMode();
+else { icons = mockIcons(); drawGhosts(); iconsSeen = true; commit(true); }
+requestAnimationFrame(frame);
+</script>
+<script src="share.js"></script>
+</body>
+</html>

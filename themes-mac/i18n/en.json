@@ -1,0 +1,16 @@
+{
+  "themes": {
+    "woodland": {
+      "name": "Woodland",
+      "desc": "A forest seen from above: your icons sit in clearings while gusts sweep the treetops and birds fly over",
+      "groups": ["Around icons", "Trees", "Sky"],
+      "params": {
+        "sigma": { "label": "Clearing size", "hint": "How big the clearings around your icons are" },
+        "autumn": { "label": "Autumn colors", "hint": "How many broadleaf trees have turned yellow or red" },
+        "wind": { "label": "Wind", "hint": "How much the treetops sway; 0 means no wind" },
+        "cover": { "label": "Cloud shadows", "hint": "How many cloud shadows drift over the woods" },
+        "birds": { "label": "Birds", "hint": "How many birds fly over the woods at once", "unit": "" }
+      }
+    }
+  }
+}
